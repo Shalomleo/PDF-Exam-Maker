@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<!-- PDF Exam Maker v2. MIT License: free to use, copy, modify and share. -->
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>PDF Exam Maker</title>
+<style>
+:root{--bg:#f6f5f1;--fg:#1d1d1b;--mut:#6b6a64;--card:#fff;--bd:#dedcd4;--acc:#1f6f5c;--accfg:#fff;--ok:#1d7a3e;--bad:#b3261e;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#161715;--fg:#ecebe6;--mut:#a09f97;--card:#1f201e;--bd:#33342f;--acc:#4fc3a1;--accfg:#10201b;--ok:#5fd38a;--bad:#ff8a80;color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:760px;margin:0 auto;padding:20px 16px 60px}
+h1{font-size:1.6rem;margin:.2em 0}h2{font-size:1.1rem;margin:1.6em 0 .6em}
+.mut{color:var(--mut)}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:16px;margin:12px 0}
+label{display:block;font-weight:600;margin:12px 0 4px}
+input,textarea{width:100%;font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:9px}
+textarea{min-height:110px;resize:vertical}
+.row{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+button{font:inherit;border:1px solid var(--bd);background:var(--card);color:var(--fg);border-radius:8px;padding:10px 16px;cursor:pointer}
+button.p{background:var(--acc);color:var(--accfg);border-color:var(--acc);font-weight:600}
+button:disabled{opacity:.5;cursor:default}
+.opt{display:block;width:100%;text-align:left;margin:6px 0}
+.opt.sel{border-color:var(--acc);box-shadow:0 0 0 2px var(--acc) inset}
+.opt.ok{border-color:var(--ok);background:color-mix(in srgb,var(--ok) 15%,transparent)}
+.opt.bad{border-color:var(--bad);background:color-mix(in srgb,var(--bad) 15%,transparent)}
+.bar{position:sticky;top:0;z-index:5;display:flex;justify-content:space-between;align-items:center;background:var(--bg);padding:10px 0;border-bottom:1px solid var(--bd)}
+#tm{font-size:1.4rem;font-variant-numeric:tabular-nums;font-weight:700}#tm.low{color:var(--bad)}
+.score{font-size:2.6rem;font-weight:800;color:var(--acc)}
+#log{font:13px/1.5 ui-monospace,Consolas,monospace;background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:10px;max-height:200px;overflow:auto;margin-top:12px}
+.err{color:var(--bad);font-weight:600}.hide{display:none}
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"></script>
+</head><body><main>
+<section id="setup">
+<h1>PDF Exam Maker</h1>
+<p class="mut">Upload your notes, choose the format, and get a timed, scored exam. Objective questions are marked instantly; theory answers are graded by AI against a model answer.</p>
+<div class="card">
+<label for="ky">Google Gemini API key (free at aistudio.google.com/apikey)</label>
+<input id="ky" type="password" autocomplete="off" placeholder="Stays in this browser and is sent only to Google">
+<label for="md">Model (leave blank to pick the newest automatically)</label>
+<input id="md" placeholder="automatic">
+<label for="f">PDF files (text-based, not scanned photos)</label>
+<input id="f" type="file" accept="application/pdf,.txt" multiple>
+<label for="pt">…or paste text instead</label>
+<textarea id="pt" placeholder="Paste lecture notes here"></textarea>
+<div class="row">
+<div><label for="nm">Objective Qs</label><input id="nm" type="number" min="0" max="40" value="5"></div>
+<div><label for="nt">Theory Qs</label><input id="nt" type="number" min="0" max="10" value="2"></div>
+<div><label for="mn">Minutes</label><input id="mn" type="number" min="1" max="240" value="20"></div>
+</div>
+<p class="mut" style="font-size:.9rem">Objective = 1 mark each. Theory = 5 marks each. Up to 40 objective and 10 theory; set either to 0 to skip it.</p>
+<button class="p" id="go">Generate exam</button> <button id="cx" class="hide">Cancel</button>
+<p id="prog" class="mut"></p>
+<div id="log" class="hide"></div>
+</div>
+</section>
+<section id="exam" class="hide"></section>
+<section id="res" class="hide"></section>
+</main>
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const L='ABCDEF',BASE='https://generativelanguage.googleapis.com/v1beta';
+let S={mcq:[],th:[],a:[],t:[],end:0,iv:null,mins:20,done:false},ctl=null,MODEL='';
+pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+try{$('#ky').value=localStorage.getItem('gkey')||''}catch(e){}
+const key=()=>$('#ky').value.trim();
+function log(m,bad){const d=$('#log');d.classList.remove('hide');const p=document.createElement('div');if(bad)p.className='err';p.textContent=new Date().toLocaleTimeString([],{hour12:false})+'  '+m;d.appendChild(p);d.scrollTop=d.scrollHeight}
+function busy(b){$('#go').disabled=b;$('#cx').classList.toggle('hide',!b);if(!b)$('#prog').textContent=''}
+$('#cx').onclick=()=>{if(ctl)ctl.abort('user')};
+
+async function readPdf(f){
+  const pdf=await pdfjsLib.getDocument({data:await f.arrayBuffer()}).promise;let t='';
+  for(let i=1;i<=pdf.numPages;i++){$('#prog').textContent='Reading '+f.name+': page '+i+' of '+pdf.numPages;const p=await pdf.getPage(i);const c=await p.getTextContent();t+=c.items.map(x=>x.str).join(' ')+'\n'}
+  return t}
+
+let MODELS=null,LAST='';
+const sleep=ms=>new Promise(r=>setTimeout(r,ms)),DELAY=4000;
+async function getModels(){
+  const m=$('#md').value.trim();if(m)return[m];if(MODELS)return MODELS;
+  log('Finding the Gemini models your key can use…');
+  const r=await fetch(BASE+'/models?pageSize=200',{headers:{'x-goog-api-key':key()}});
+  const d=await r.json();if(!r.ok)throw new Error((d.error&&d.error.message)||('HTTP '+r.status));
+  const v=n=>parseFloat(n.split('-')[1]),lite=n=>/lite$/.test(n)?1:0;
+  const c=(d.models||[]).filter(x=>(x.supportedGenerationMethods||[]).includes('generateContent')).map(x=>x.name.replace('models/','')).filter(n=>/^gemini-\d+(\.\d+)?-flash(-lite)?$/.test(n)).sort((a,b)=>v(b)-v(a)||lite(a)-lite(b));
+  if(!c.length)throw new Error('No Gemini Flash model is available for this key.');
+  return MODELS=c}
+async function stream(model,prompt){
+  ctl=new AbortController();let timer;
+  const bump=()=>{clearTimeout(timer);timer=setTimeout(()=>ctl.abort('timeout'),90000)};bump();
+  let out='';
+  const eat=line=>{line=line.trim();if(!line.startsWith('data:'))return;
+    try{const d=JSON.parse(line.slice(5));const ps=(d.candidates&&d.candidates[0]&&d.candidates[0].content&&d.candidates[0].content.parts)||[];
+      for(const p of ps)if(p.text&&!p.thought)out+=p.text;$('#prog').textContent='Receiving… '+out.length+' characters'}catch(e){}};
+  try{
+    const r=await fetch(BASE+'/models/'+encodeURIComponent(model)+':streamGenerateContent?alt=sse',{method:'POST',signal:ctl.signal,headers:{'Content-Type':'application/json','x-goog-api-key':key()},body:JSON.stringify({contents:[{parts:[{text:prompt}]}],generationConfig:{responseMimeType:'application/json'}})});
+    if(!r.ok){let m='HTTP '+r.status;try{const d=await r.json();m=(d.error&&d.error.message)||m}catch(e){}{const er=new Error(m);er.status=r.status;throw er}}
+    const rd=r.body.getReader(),dec=new TextDecoder();let buf='';
+    for(;;){const x=await rd.read();if(x.done)break;bump();buf+=dec.decode(x.value,{stream:true});
+      let i;while((i=buf.indexOf('\n'))>=0){eat(buf.slice(0,i));buf=buf.slice(i+1)}}
+    eat(buf);return out
+  }catch(e){
+    if(ctl.signal.aborted)throw new Error(ctl.signal.reason==='user'?'Cancelled.':'No response from Gemini for 90 seconds. Check your internet connection and try again.');
+    throw e}
+  finally{clearTimeout(timer)}}
+
+async function ask(prompt){
+  const ms=await getModels();let last;
+  for(let i=0;i<ms.length&&i<4;i++){
+    for(let a=0;a<2;a++){
+      if(LAST!==ms[i]){log('Using '+ms[i]);LAST=ms[i]}
+      try{
+        const t=await stream(ms[i],prompt);
+        const x=t.indexOf('{'),y=t.lastIndexOf('}');
+        if(x<0||y<x)throw new Error('Gemini’s reply was not a valid question set. Please try again.');
+        const out=JSON.parse(t.slice(x,y+1));
+        if(i>0&&MODELS&&!$('#md').value.trim())MODELS=[ms[i],...ms.filter(n=>n!==ms[i])];
+        return out
+      }catch(e){last=e;
+        const busy=e.status===503||e.status===429||e.status===500||/high demand|overloaded|unavailable|quota|try again later/i.test(e.message||'');
+        if(!busy)throw e;
+        if(a===0){log(ms[i]+' is busy. Retrying in '+DELAY/1000+' seconds…');await sleep(DELAY)}
+        else log(ms[i]+' is still busy'+(i+1<ms.length&&i<3?'. Trying '+ms[i+1]+'…':'.'),1)}}}
+  throw last}
+const mk=(text,nm,nt)=>`You are an examiner. Using ONLY the study material below, write exactly ${nm} multiple-choice questions (4 options each, exactly one correct, testing understanding) and exactly ${nt} theory questions (each answerable in a short paragraph). Return only JSON: {"mcq":[{"q":"","options":["","","",""],"answer":0,"why":""}],"theory":[{"q":"","model":"model answer with the key points expected"}]}. "answer" is the 0-based index of the correct option. Use [] for a type with zero questions.\n\nMATERIAL:\n${text}`;
+function add(r){
+  for(const q of(r&&r.mcq)||[])if(q&&q.q&&Array.isArray(q.options)&&q.options.length>=2&&Number.isInteger(q.answer)&&q.answer>=0&&q.answer<q.options.length)S.mcq.push(q);
+  for(const q of(r&&r.theory)||[])if(q&&q.q)S.th.push({q:q.q,model:q.model||''})}
+
+$('#go').onclick=async()=>{
+  $('#log').innerHTML='';
+  if(!key()){log('Paste your Gemini API key first.',1);return}
+  try{localStorage.setItem('gkey',key())}catch(e){}
+  const nm=Math.max(0,Math.min(40,+$('#nm').value||0)),nt=Math.max(0,Math.min(10,+$('#nt').value||0));
+  if(nm+nt===0){log('Choose at least one question.',1);return}
+  busy(true);
+  try{
+    let text=$('#pt').value+'\n';
+    for(const f of $('#f').files){log('Reading '+f.name+'…');text+=f.name.toLowerCase().endsWith('.txt')?await f.text():await readPdf(f)}
+    text=text.replace(/\s+/g,' ').trim();
+    log('Found '+text.length+' characters of text.');
+    if(text.length<300)throw new Error('Not enough readable text. Scanned PDFs are photos and have no text; paste the text instead.');
+    if(text.length>40000){log('Using the first 40000 characters.');text=text.slice(0,40000)}
+    log('Asking Gemini for '+nm+' objective and '+nt+' theory questions…');
+    S.mcq=[];S.th=[];add(await ask(mk(text,nm,nt)));
+    S.mcq=S.mcq.slice(0,nm);S.th=S.th.slice(0,nt);
+    if(!S.mcq.length&&!S.th.length)throw new Error('No usable questions came back. Please try again.');
+    log('Done: '+S.mcq.length+' objective, '+S.th.length+' theory.');
+    S.mins=Math.max(1,+$('#mn').value||20);startExam()
+  }catch(e){log('Error: '+(e&&e.message||e),1)}
+  busy(false)};
+
+function startExam(){
+  S.a=S.mcq.map(()=>null);S.t=S.th.map(()=>'');S.done=false;S.end=Date.now()+S.mins*60000;
+  $('#setup').classList.add('hide');$('#res').classList.add('hide');$('#exam').classList.remove('hide');
+  let h='<div class="bar"><div id="tm"></div><button class="p" id="sb">Submit</button></div>';
+  if(S.mcq.length)h+='<h2>Section A: Objective</h2>'+S.mcq.map((q,i)=>`<div class="card"><b>${i+1}. ${esc(q.q)}</b>${q.options.map((o,j)=>`<button class="opt" data-q="${i}" data-o="${j}">${L[j]}. ${esc(o)}</button>`).join('')}</div>`).join('');
+  if(S.th.length)h+='<h2>Section B: Theory (5 marks each)</h2>'+S.th.map((q,i)=>`<div class="card"><b>${i+1}. ${esc(q.q)}</b><textarea data-t="${i}" placeholder="Write your answer"></textarea></div>`).join('');
+  $('#exam').innerHTML=h;scrollTo(0,0);
+  $('#exam').onclick=e=>{const b=e.target.closest('.opt');if(!b||S.done)return;const q=+b.dataset.q;S.a[q]=+b.dataset.o;document.querySelectorAll(`[data-q="${q}"]`).forEach(x=>x.classList.toggle('sel',x===b))};
+  $('#exam').oninput=e=>{if(e.target.dataset.t!=null)S.t[+e.target.dataset.t]=e.target.value};
+  $('#sb').onclick=()=>{const b=$('#sb');if(b.dataset.c){submit();return}b.dataset.c=1;b.textContent='Tap again to confirm';setTimeout(()=>{if(!S.done){delete b.dataset.c;b.textContent='Submit'}},4000)};
+  clearInterval(S.iv);tick();S.iv=setInterval(tick,500)}
+function tick(){
+  const s=Math.max(0,Math.round((S.end-Date.now())/1000)),el=$('#tm');if(!el)return;
+  el.textContent=String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0');el.classList.toggle('low',s<=60);
+  if(s<=0&&!S.done)submit()}
+async function submit(){
+  if(S.done)return;S.done=true;clearInterval(S.iv);
+  const sb=$('#sb');if(sb)sb.disabled=true;
+  const g={};
+  for(let i=0;i<S.th.length;i++){
+    if(!(S.t[i]||'').trim()){g[i]={score:0,feedback:'No answer given.'};continue}
+    if(sb)sb.textContent='Marking theory '+(i+1)+' of '+S.th.length+'…';
+    try{g[i]=await ask('Grade this theory answer out of 5 marks, fairly, against the model answer (accept correct points phrased differently; 0 if wrong or blank). Return only JSON: {"score":0,"feedback":"one or two sentences on what was right and what was missing"}\n\n'+JSON.stringify({question:S.th[i].q,model_answer:S.th[i].model,student_answer:S.t[i]}))}catch(e){g[i]={score:null,feedback:'Could not be graded: '+(e.message||e)}}
+  }
+  showResults(g)}
+function showResults(g){
+  $('#exam').classList.add('hide');const R=$('#res');R.classList.remove('hide');
+  const ms=S.mcq.reduce((n,q,i)=>n+(S.a[i]===q.answer?1:0),0);
+  const sc=i=>Math.max(0,Math.min(5,+(g[i]&&g[i].score)||0));
+  const ts=S.th.reduce((n,q,i)=>n+sc(i),0),max=S.mcq.length+5*S.th.length,tot=ms+ts;
+  let h=`<h1>Results</h1><div class="card"><div class="score">${tot} / ${max} (${Math.round(tot/max*100)}%)</div><p class="mut">Objective ${ms}/${S.mcq.length}${S.th.length?` · Theory ${ts}/${5*S.th.length}`:''}</p><button class="p" id="rt">Retake same exam</button> <button id="nw">New exam</button></div>`;
+  if(S.mcq.length)h+='<h2>Objective review</h2>'+S.mcq.map((q,i)=>`<div class="card"><b>${i+1}. ${esc(q.q)}</b>${q.options.map((o,j)=>`<div class="opt ${j===q.answer?'ok':j===S.a[i]?'bad':''}">${L[j]}. ${esc(o)}</div>`).join('')}<p class="mut">${S.a[i]==null?'Not answered. ':''}${esc(q.why)}</p></div>`).join('');
+  if(S.th.length)h+='<h2>Theory review</h2>'+S.th.map((q,i)=>`<div class="card"><b>${i+1}. ${esc(q.q)}</b><p><b>${g[i]&&g[i].score!=null?sc(i):'?'}/5</b> ${esc(g[i]?g[i].feedback:'')}</p><p class="mut"><b>Your answer:</b> ${esc(S.t[i]||'(blank)')}</p><p><b>Model answer:</b> ${esc(q.model)}</p></div>`).join('');
+  R.innerHTML=h;scrollTo(0,0);
+  $('#rt').onclick=()=>{R.classList.add('hide');startExam()};
+  $('#nw').onclick=()=>{R.classList.add('hide');$('#setup').classList.remove('hide')}}
+</script></body></html>
