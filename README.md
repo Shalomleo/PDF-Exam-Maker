@@ -51,4 +51,4 @@ The log under the button shows each step, so you can see what is happening and w
 
 ## License
 
-MIT. See the LICENSE file. Replace "[Your name]" in LICENSE with your name before publishing.
+MIT. See the LICENSE file.
